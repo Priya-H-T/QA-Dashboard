@@ -1,7 +1,19 @@
 import { IconLayers, IconTrend, IconTimer, IconCheck } from './icons'
 
+// Backend timestamps are naive UTC (no timezone marker), e.g.
+// "2026-09-16T14:09:48.123456" instead of "...Z". JavaScript's Date
+// constructor treats a string with no timezone info as LOCAL time,
+// not UTC, which silently shifts every timestamp by the viewer's UTC
+// offset. Force UTC interpretation before parsing.
+export function toDate(dateString) {
+  if (typeof dateString === 'string' && !/[zZ]|[+-]\d{2}:\d{2}$/.test(dateString)) {
+    return new Date(dateString + 'Z')
+  }
+  return new Date(dateString)
+}
+
 export function relativeTime(dateString) {
-  const date = new Date(dateString)
+  const date = toDate(dateString)
   const diffMs = Date.now() - date.getTime()
   const diffMin = Math.round(diffMs / 60000)
   if (diffMin < 1) return 'just now'

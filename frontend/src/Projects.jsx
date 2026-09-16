@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { listProjects, listProjectConfigs, createProjectConfig } from './api/client'
+import { listProjects, listProjectConfigs, createProjectConfig, triggerProjectRun } from './api/client'
 import { relativeTime } from './StatsBar'
 import { IconLayers, IconCheck, IconX, IconRefresh } from './icons'
 
@@ -80,6 +80,42 @@ function NewProjectModal({ onCreated, onCancel }) {
   )
 }
 
+function RunTestsModal({ config, onConfirm, onCancel }) {
+  const [testPath, setTestPath] = useState('')
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') onConfirm(testPath || undefined)
+    if (e.key === 'Escape') onCancel()
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3 className="modal-title">Run tests \u2014 {config.name}</h3>
+        <p className="muted modal-desc">
+          Test path or pattern (e.g. tests/test_login.py, or -k login). Leave blank to run everything.
+        </p>
+        <input
+          className="field-input"
+          value={testPath}
+          onChange={(e) => setTestPath(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="tests/test_login.py"
+          autoFocus
+        />
+        <div className="project-form-actions">
+          <button className="icon-btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="login-button" onClick={() => onConfirm(testPath || undefined)}>
+            Run
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ProjectsStatsBar({ allProjects, configuredCount, testedCount }) {
   const totalRuns = allProjects.reduce((sum, p) => sum + (p.total_runs || 0), 0)
   const totalTests = allProjects.reduce((sum, p) => sum + (p.total_tests || 0), 0)
@@ -133,7 +169,7 @@ function ProjectsStatsBar({ allProjects, configuredCount, testedCount }) {
   )
 }
 
-function ProjectCard({ project, onClick }) {
+function ProjectCard({ project, config, onClick, isRunning, onRunClick }) {
   return (
     <div className="project-card" onClick={onClick}>
       <div className="project-card-header">
@@ -148,6 +184,20 @@ function ProjectCard({ project, onClick }) {
           </span>
         </div>
       </div>
+
+      {config && (
+        <button
+          className="icon-btn run-tests-btn"
+          onClick={(e) => {
+            e.stopPropagation()
+            onRunClick(config)
+          }}
+          disabled={isRunning}
+        >
+          <IconRefresh size={13} />
+          {isRunning ? 'Started - check back soon' : 'Run tests'}
+        </button>
+      )}
     </div>
   )
 }
@@ -157,7 +207,9 @@ function Projects({ onSelectProject }) {
   const [configs, setConfigs] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
-  const [showModal, setShowModal] = useState(false)
+  const [showForm, setShowForm] = useState(false)
+  const [runTarget, setRunTarget] = useState(null)
+  const [runningIds, setRunningIds] = useState(() => new Set())
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -177,6 +229,7 @@ function Projects({ onSelectProject }) {
     loadAll()
   }, [loadAll])
 
+  const configByName = Object.fromEntries(configs.map((c) => [c.name, c]))
   const projectNames = new Set(projects.map((p) => p.name))
   const configOnlyProjects = configs
     .filter((c) => !projectNames.has(c.name))
@@ -191,6 +244,26 @@ function Projects({ onSelectProject }) {
     }))
   const allProjects = [...projects, ...configOnlyProjects]
 
+  const handleConfirmRun = async (testPath) => {
+    const config = runTarget
+    setRunTarget(null)
+    setError('')
+    setRunningIds((prev) => new Set(prev).add(config.id))
+    try {
+      await triggerProjectRun(config.id, testPath)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setTimeout(() => {
+        setRunningIds((prev) => {
+          const next = new Set(prev)
+          next.delete(config.id)
+          return next
+        })
+      }, 3000)
+    }
+  }
+
   return (
     <div className="dashboard">
       <ProjectsStatsBar
@@ -201,7 +274,7 @@ function Projects({ onSelectProject }) {
 
       <div className="runs-list-header">
         <h2>Projects</h2>
-        <button className="icon-btn" onClick={() => setShowModal(true)}>
+        <button className="icon-btn" onClick={() => setShowForm(true)}>
           + New project
         </button>
       </div>
@@ -221,18 +294,29 @@ function Projects({ onSelectProject }) {
           <ProjectCard
             key={project.name}
             project={project}
+            config={configByName[project.name]}
             onClick={() => onSelectProject(project.name)}
+            isRunning={configByName[project.name] && runningIds.has(configByName[project.name].id)}
+            onRunClick={setRunTarget}
           />
         ))}
       </div>
 
-      {showModal && (
+      {showForm && (
         <NewProjectModal
           onCreated={() => {
-            setShowModal(false)
+            setShowForm(false)
             loadAll()
           }}
-          onCancel={() => setShowModal(false)}
+          onCancel={() => setShowForm(false)}
+        />
+      )}
+
+      {runTarget && (
+        <RunTestsModal
+          config={runTarget}
+          onConfirm={handleConfirmRun}
+          onCancel={() => setRunTarget(null)}
         />
       )}
     </div>
