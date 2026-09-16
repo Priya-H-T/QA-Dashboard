@@ -1,0 +1,22 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Database and generated data
+qa_dashboard.db
+screenshots/
+reports/
+
+# Environment secrets
+.env
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Editor/OS junk
+.idea/
+.vscode/
+.DS_Store
