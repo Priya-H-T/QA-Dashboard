@@ -6,7 +6,8 @@ import { IconLayers, IconCheck, IconX, IconRefresh } from './icons'
 function NewProjectModal({ onCreated, onCancel }) {
   const [name, setName] = useState('')
   const [workingDirectory, setWorkingDirectory] = useState('')
-  const [pythonExecutable, setPythonExecutable] = useState('')
+  const [projectType, setProjectType] = useState('python')
+  const [executable, setExecutable] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -15,7 +16,7 @@ function NewProjectModal({ onCreated, onCancel }) {
     setError('')
     setSaving(true)
     try {
-      await createProjectConfig(name, workingDirectory, pythonExecutable)
+      await createProjectConfig(name, workingDirectory, executable, projectType)
       onCreated()
     } catch (err) {
       setError(err.message)
@@ -24,12 +25,22 @@ function NewProjectModal({ onCreated, onCancel }) {
     }
   }
 
+  const execLabel =
+    projectType === 'javascript'
+      ? 'Test command (npm, npx, or path to node.exe)'
+      : "Python executable (project's venv)"
+
+  const execPlaceholder =
+    projectType === 'javascript'
+      ? 'npm test   or   npx playwright test'
+      : 'C:\\...\\Automation Framework\\.venv\\Scripts\\python.exe'
+
   return (
     <div className="modal-overlay" onClick={onCancel}>
       <form className="modal-dialog" onClick={(e) => e.stopPropagation()} onSubmit={handleSubmit}>
         <h3 className="modal-title">New project</h3>
         <p className="muted modal-desc">
-          Register a project so pytest runs can be tagged and grouped under it.
+          Register a project so test runs can be tagged and grouped under it.
         </p>
 
         <label className="field">
@@ -45,6 +56,18 @@ function NewProjectModal({ onCreated, onCancel }) {
         </label>
 
         <label className="field">
+          <span className="field-label">Project type</span>
+          <select
+            className="field-input"
+            value={projectType}
+            onChange={(e) => setProjectType(e.target.value)}
+          >
+            <option value="python">Python (pytest)</option>
+            <option value="javascript">JavaScript (npm / npx / node)</option>
+          </select>
+        </label>
+
+        <label className="field">
           <span className="field-label">Working directory</span>
           <input
             className="field-input"
@@ -56,12 +79,12 @@ function NewProjectModal({ onCreated, onCancel }) {
         </label>
 
         <label className="field">
-          <span className="field-label">Python executable (project's venv)</span>
+          <span className="field-label">{execLabel}</span>
           <input
             className="field-input"
-            value={pythonExecutable}
-            onChange={(e) => setPythonExecutable(e.target.value)}
-            placeholder="C:\...\Automation Framework\.venv\Scripts\python.exe"
+            value={executable}
+            onChange={(e) => setExecutable(e.target.value)}
+            placeholder={execPlaceholder}
           />
         </label>
 
@@ -83,6 +106,8 @@ function NewProjectModal({ onCreated, onCancel }) {
 function RunTestsModal({ config, onConfirm, onCancel }) {
   const [testPath, setTestPath] = useState('')
 
+  const isJs = config.project_type === 'javascript'
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') onConfirm(testPath || undefined)
     if (e.key === 'Escape') onCancel()
@@ -93,14 +118,16 @@ function RunTestsModal({ config, onConfirm, onCancel }) {
       <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
         <h3 className="modal-title">Run tests \u2014 {config.name}</h3>
         <p className="muted modal-desc">
-          Test path or pattern (e.g. tests/test_login.py, or -k login). Leave blank to run everything.
+          {isJs
+            ? 'Extra args to append to the command (e.g. --grep login). Leave blank to run everything.'
+            : 'Test path or pattern (e.g. tests/test_login.py, or -k login). Leave blank to run everything.'}
         </p>
         <input
           className="field-input"
           value={testPath}
           onChange={(e) => setTestPath(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="tests/test_login.py"
+          placeholder={isJs ? '--grep login' : 'tests/test_login.py'}
           autoFocus
         />
         <div className="project-form-actions">
@@ -181,6 +208,7 @@ function ProjectCard({ project, config, onClick, isRunning, onRunClick }) {
           <span className="muted project-card-sub">
             {project.total_runs} run{project.total_runs === 1 ? '' : 's'}
             {project.last_run_at ? ` \u00b7 last ${relativeTime(project.last_run_at)}` : ''}
+            {config?.project_type === 'javascript' ? ' \u00b7 JS' : ''}
           </span>
         </div>
       </div>

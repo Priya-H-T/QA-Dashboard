@@ -104,6 +104,7 @@ class ProjectSummary(BaseModel):
 class ProjectConfigCreate(BaseModel):
     name: str
     working_directory: str
+    project_type: Optional[str] = "python"
     python_executable: Optional[str] = "python"
 
 
@@ -113,6 +114,7 @@ class ProjectConfigOut(BaseModel):
     id: str
     name: str
     working_directory: str
+    project_type: str
     python_executable: str
 
 

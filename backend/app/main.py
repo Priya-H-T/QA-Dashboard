@@ -27,6 +27,9 @@ ensure_columns(engine, "runs", {
 ensure_columns(engine, "users", {
     "role": "TEXT DEFAULT 'user'",
 })
+ensure_columns(engine, "project_configs", {
+    "project_type": "TEXT DEFAULT 'python'",
+})
 
 SCREENSHOT_DIR = os.environ.get("QA_DASHBOARD_SCREENSHOT_DIR", "./screenshots")
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
@@ -386,10 +389,14 @@ def create_project_config(
     if existing:
         raise HTTPException(status_code=409, detail="A project with this name already exists")
 
+    project_type = payload.project_type if payload.project_type in ("python", "javascript") else "python"
+    default_executable = "python" if project_type == "python" else "npm"
+
     config = models.ProjectConfig(
         name=payload.name,
         working_directory=payload.working_directory,
-        python_executable=payload.python_executable or "python",
+        project_type=project_type,
+        python_executable=payload.python_executable or default_executable,
         created_by=user.id,
     )
     db.add(config)
@@ -436,16 +443,24 @@ def trigger_project_run(
     env["QA_DASHBOARD_API_URL"] = "http://127.0.0.1:8000"
     env["QA_DASHBOARD_PROJECT"] = config.name
 
-    args = [config.python_executable, "-m", "pytest"]
-    if payload and payload.test_path:
-        args.extend(shlex.split(payload.test_path, posix=False))
+    if config.project_type == "javascript":
+        # python_executable field holds a command like "npm test", "npx playwright test", or a full node.exe path
+        args = shlex.split(config.python_executable, posix=False)
+        if payload and payload.test_path:
+            args.extend(shlex.split(payload.test_path, posix=False))
+        use_shell = os.name == "nt"
+    else:
+        args = [config.python_executable, "-m", "pytest"]
+        if payload and payload.test_path:
+            args.extend(shlex.split(payload.test_path, posix=False))
+        use_shell = False
 
     try:
-        subprocess.Popen(args, cwd=config.working_directory, env=env)
+        subprocess.Popen(args, cwd=config.working_directory, env=env, shell=use_shell)
     except FileNotFoundError:
         raise HTTPException(
             status_code=400,
-            detail=f"Could not find Python executable: {config.python_executable}",
+            detail=f"Could not find executable: {config.python_executable}",
         )
 
     return {"status": "started"}
