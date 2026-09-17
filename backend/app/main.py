@@ -51,9 +51,9 @@ SESSION_LIFETIME = timedelta(days=7)
 
 
 def get_current_user(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
+        authorization: Optional[str] = Header(None),
+        token: Optional[str] = Query(None),
+        db: Session = Depends(get_db),
 ):
     raw_token = None
     if authorization and authorization.startswith("Bearer "):
@@ -114,9 +114,9 @@ def list_users(db: Session = Depends(get_db), user: models.User = Depends(get_cu
 
 @app.post("/users", response_model=schemas.UserOut)
 def create_user_endpoint(
-    payload: schemas.UserCreate,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+        payload: schemas.UserCreate,
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
 ):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Admin access required")
@@ -141,9 +141,9 @@ def create_user_endpoint(
 
 @app.post("/runs", response_model=dict)
 def create_run(
-    payload: schemas.RunCreate,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+        payload: schemas.RunCreate,
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
 ):
     run = models.Run(
         name=payload.name, environment=payload.environment,
@@ -168,9 +168,9 @@ def finish_run(run_id: str, db: Session = Depends(get_db)):
 
 @app.get("/runs", response_model=list[schemas.RunSummary])
 def list_runs(
-    project: Optional[str] = None,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+        project: Optional[str] = None,
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
 ):
     query = db.query(models.Run)
     if not _is_admin(user):
@@ -267,13 +267,13 @@ def create_test_case(run_id: str, payload: schemas.TestCaseCreate, db: Session =
 
 @app.get("/testcases", response_model=list[schemas.TestCaseListItem])
 def list_test_cases(
-    status: Optional[models.TestStatus] = None,
-    suite: Optional[str] = None,
-    run_id: Optional[str] = None,
-    project: Optional[str] = None,
-    search: Optional[str] = None,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+        status: Optional[models.TestStatus] = None,
+        suite: Optional[str] = None,
+        run_id: Optional[str] = None,
+        project: Optional[str] = None,
+        search: Optional[str] = None,
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
 ):
     query = db.query(models.TestCase).join(models.Run)
     if not _is_admin(user):
@@ -381,16 +381,21 @@ def delete_report(run_id: str, db: Session = Depends(get_db), user: models.User 
 
 @app.post("/project-configs", response_model=schemas.ProjectConfigOut)
 def create_project_config(
-    payload: schemas.ProjectConfigCreate,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+        payload: schemas.ProjectConfigCreate,
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
 ):
     existing = db.query(models.ProjectConfig).filter(models.ProjectConfig.name == payload.name).first()
     if existing:
         raise HTTPException(status_code=409, detail="A project with this name already exists")
 
-    project_type = payload.project_type if payload.project_type in ("python", "javascript") else "python"
-    default_executable = "python" if project_type == "python" else "npm"
+    project_type = payload.project_type if payload.project_type in ("python", "javascript", "java") else "python"
+    default_executables = {
+        "python": "python",
+        "javascript": "npm test",
+        "java": "mvn test",
+    }
+    default_executable = default_executables[project_type]
 
     config = models.ProjectConfig(
         name=payload.name,
@@ -415,10 +420,10 @@ def list_project_configs(db: Session = Depends(get_db), user: models.User = Depe
 
 @app.post("/project-configs/{config_id}/trigger")
 def trigger_project_run(
-    config_id: str,
-    payload: schemas.TriggerRunRequest = None,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+        config_id: str,
+        payload: schemas.TriggerRunRequest = None,
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
 ):
     config = db.get(models.ProjectConfig, config_id)
     if not config:
@@ -443,8 +448,9 @@ def trigger_project_run(
     env["QA_DASHBOARD_API_URL"] = "http://127.0.0.1:8000"
     env["QA_DASHBOARD_PROJECT"] = config.name
 
-    if config.project_type == "javascript":
-        # python_executable field holds a command like "npm test", "npx playwright test", or a full node.exe path
+    if config.project_type in ("javascript", "java"):
+        # python_executable field holds a command like "npm test", "mvn test",
+        # "npx playwright test", or a full path to an executable
         args = shlex.split(config.python_executable, posix=False)
         if payload and payload.test_path:
             args.extend(shlex.split(payload.test_path, posix=False))
