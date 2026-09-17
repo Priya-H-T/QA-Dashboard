@@ -66,12 +66,6 @@ export const listProjects = () => api.get('/projects')
 
 export const listProjectConfigs = () => api.get('/project-configs')
 
-export const createProjectConfig = (name, workingDirectory, pythonExecutable) =>
-  api.post('/project-configs', {
-    name,
-    working_directory: workingDirectory,
-    python_executable: pythonExecutable || 'python',
-  })
 
 export const triggerProjectRun = (configId, testPath) =>
   api.post(`/project-configs/${configId}/trigger`, testPath ? { test_path: testPath } : {})
@@ -116,3 +110,11 @@ export const listUsers = () => api.get('/users')
 
 export const createUser = (username, password, role) =>
   api.post('/users', { username, password, role: role || 'user' })
+
+export const createProjectConfig = (name, projectType, workingDirectory, pythonExecutable) =>
+  api.post('/project-configs', {
+    name,
+    project_type: projectType || 'python',
+    working_directory: workingDirectory,
+    python_executable: pythonExecutable || 'python',
+  })

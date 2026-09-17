@@ -93,8 +93,8 @@ class ProjectConfig(Base):
 
     id = Column(String, primary_key=True, default=gen_uuid)
     name = Column(String, unique=True, nullable=False, index=True)
-    working_directory = Column(String, nullable=False)
     project_type = Column(String, nullable=False, default="python")
+    working_directory = Column(String, nullable=False)
     python_executable = Column(String, nullable=False, default="python")
     created_by = Column(String, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

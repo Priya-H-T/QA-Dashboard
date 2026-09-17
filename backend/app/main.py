@@ -51,9 +51,9 @@ SESSION_LIFETIME = timedelta(days=7)
 
 
 def get_current_user(
-        authorization: Optional[str] = Header(None),
-        token: Optional[str] = Query(None),
-        db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
 ):
     raw_token = None
     if authorization and authorization.startswith("Bearer "):
@@ -114,9 +114,9 @@ def list_users(db: Session = Depends(get_db), user: models.User = Depends(get_cu
 
 @app.post("/users", response_model=schemas.UserOut)
 def create_user_endpoint(
-        payload: schemas.UserCreate,
-        db: Session = Depends(get_db),
-        user: models.User = Depends(get_current_user),
+    payload: schemas.UserCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
 ):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Admin access required")
@@ -141,9 +141,9 @@ def create_user_endpoint(
 
 @app.post("/runs", response_model=dict)
 def create_run(
-        payload: schemas.RunCreate,
-        db: Session = Depends(get_db),
-        user: models.User = Depends(get_current_user),
+    payload: schemas.RunCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
 ):
     run = models.Run(
         name=payload.name, environment=payload.environment,
@@ -168,9 +168,9 @@ def finish_run(run_id: str, db: Session = Depends(get_db)):
 
 @app.get("/runs", response_model=list[schemas.RunSummary])
 def list_runs(
-        project: Optional[str] = None,
-        db: Session = Depends(get_db),
-        user: models.User = Depends(get_current_user),
+    project: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
 ):
     query = db.query(models.Run)
     if not _is_admin(user):
@@ -267,13 +267,13 @@ def create_test_case(run_id: str, payload: schemas.TestCaseCreate, db: Session =
 
 @app.get("/testcases", response_model=list[schemas.TestCaseListItem])
 def list_test_cases(
-        status: Optional[models.TestStatus] = None,
-        suite: Optional[str] = None,
-        run_id: Optional[str] = None,
-        project: Optional[str] = None,
-        search: Optional[str] = None,
-        db: Session = Depends(get_db),
-        user: models.User = Depends(get_current_user),
+    status: Optional[models.TestStatus] = None,
+    suite: Optional[str] = None,
+    run_id: Optional[str] = None,
+    project: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
 ):
     query = db.query(models.TestCase).join(models.Run)
     if not _is_admin(user):
@@ -381,27 +381,19 @@ def delete_report(run_id: str, db: Session = Depends(get_db), user: models.User 
 
 @app.post("/project-configs", response_model=schemas.ProjectConfigOut)
 def create_project_config(
-        payload: schemas.ProjectConfigCreate,
-        db: Session = Depends(get_db),
-        user: models.User = Depends(get_current_user),
+    payload: schemas.ProjectConfigCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
 ):
     existing = db.query(models.ProjectConfig).filter(models.ProjectConfig.name == payload.name).first()
     if existing:
         raise HTTPException(status_code=409, detail="A project with this name already exists")
 
-    project_type = payload.project_type if payload.project_type in ("python", "javascript", "java") else "python"
-    default_executables = {
-        "python": "python",
-        "javascript": "npm test",
-        "java": "mvn test",
-    }
-    default_executable = default_executables[project_type]
-
     config = models.ProjectConfig(
         name=payload.name,
+        project_type=payload.project_type or "python",
         working_directory=payload.working_directory,
-        project_type=project_type,
-        python_executable=payload.python_executable or default_executable,
+        python_executable=payload.python_executable or "python",
         created_by=user.id,
     )
     db.add(config)
@@ -412,24 +404,22 @@ def create_project_config(
 
 @app.get("/project-configs", response_model=list[schemas.ProjectConfigOut])
 def list_project_configs(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    query = db.query(models.ProjectConfig)
-    if not _is_admin(user):
-        query = query.filter(models.ProjectConfig.created_by == user.id)
-    return query.order_by(models.ProjectConfig.name).all()
+    # Project configs (working directory + venv) are shared infrastructure
+    # registrations, not personal data like runs/reports — every logged-in
+    # user can see and trigger any registered project.
+    return db.query(models.ProjectConfig).order_by(models.ProjectConfig.name).all()
 
 
 @app.post("/project-configs/{config_id}/trigger")
 def trigger_project_run(
-        config_id: str,
-        payload: schemas.TriggerRunRequest = None,
-        db: Session = Depends(get_db),
-        user: models.User = Depends(get_current_user),
+    config_id: str,
+    payload: schemas.TriggerRunRequest = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
 ):
     config = db.get(models.ProjectConfig, config_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project config not found")
-    if not _is_admin(user) and config.created_by != user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to trigger this project")
 
     if not os.path.isdir(config.working_directory):
         raise HTTPException(status_code=400, detail=f"Working directory not found: {config.working_directory}")
@@ -448,25 +438,33 @@ def trigger_project_run(
     env["QA_DASHBOARD_API_URL"] = "http://127.0.0.1:8000"
     env["QA_DASHBOARD_PROJECT"] = config.name
 
-    if config.project_type in ("javascript", "java"):
-        # python_executable field holds a command like "npm test", "mvn test",
-        # "npx playwright test", or a full path to an executable
-        args = shlex.split(config.python_executable, posix=False)
-        if payload and payload.test_path:
-            args.extend(shlex.split(payload.test_path, posix=False))
-        use_shell = os.name == "nt"
-    else:
-        args = [config.python_executable, "-m", "pytest"]
-        if payload and payload.test_path:
-            args.extend(shlex.split(payload.test_path, posix=False))
-        use_shell = False
+    # We can't script a JetBrains IDE to click "Run" on a specific test —
+    # there's no public CLI for that. Instead, open the right IDE on the
+    # project directory; run configurations there inherit this process's
+    # environment by default, so results still report back once the
+    # person runs the test themselves from inside the IDE.
+    # `where pycharm` / `where idea` weren't resolving via PATH even after
+    # confirming the .bat files exist and PATH is set correctly — rather
+    # than keep fighting Windows PATH resolution, call the launcher by its
+    # full path directly. Override via env var if paths differ on another
+    # machine.
+    default_pycharm = r"C:\Program Files\JetBrains\PyCharm Community Edition 2025.2.6\bin\pycharm.bat"
+    default_idea = r"C:\Program Files\JetBrains\IntelliJ IDEA 2026.1.3\bin\idea.bat"
+    ide_command = os.environ.get(
+        "QA_DASHBOARD_PYCHARM_PATH" if config.project_type == "python" else "QA_DASHBOARD_IDEA_PATH",
+        default_pycharm if config.project_type == "python" else default_idea,
+    )
 
     try:
-        subprocess.Popen(args, cwd=config.working_directory, env=env, shell=use_shell)
+        subprocess.Popen([ide_command, config.working_directory], env=env)
     except FileNotFoundError:
         raise HTTPException(
             status_code=400,
-            detail=f"Could not find executable: {config.python_executable}",
+            detail=(
+                f"Could not find the IDE launcher at '{ide_command}'. Set "
+                f"QA_DASHBOARD_PYCHARM_PATH or QA_DASHBOARD_IDEA_PATH to the correct "
+                f".bat file path if your install location differs."
+            ),
         )
 
     return {"status": "started"}

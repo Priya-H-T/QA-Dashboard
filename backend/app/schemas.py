@@ -140,3 +140,19 @@ class UserCreate(BaseModel):
     username: str
     password: str
     role: Optional[str] = "user"
+
+class ProjectConfigCreate(BaseModel):
+    name: str
+    project_type: Optional[str] = "python"
+    working_directory: str
+    python_executable: Optional[str] = "python"
+
+
+class ProjectConfigOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    project_type: str
+    working_directory: str
+    python_executable: str
