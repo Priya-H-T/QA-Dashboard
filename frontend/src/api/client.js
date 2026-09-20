@@ -66,6 +66,15 @@ export const listProjects = () => api.get('/projects')
 
 export const listProjectConfigs = () => api.get('/project-configs')
 
+export const createProjectConfig = (name, projectType, workingDirectory, pythonExecutable) =>
+  api.post('/project-configs', {
+    name,
+    project_type: projectType || 'python',
+    working_directory: workingDirectory,
+    python_executable: pythonExecutable || 'python',
+  })
+
+export const deleteProjectConfig = (configId) => api.delete(`/project-configs/${configId}`)
 
 export const triggerProjectRun = (configId, testPath) =>
   api.post(`/project-configs/${configId}/trigger`, testPath ? { test_path: testPath } : {})
@@ -77,6 +86,18 @@ export const getRun = (runId) => api.get(`/runs/${runId}`)
 
 export const screenshotUrl = (testCaseId) =>
   `${BASE_URL}/testcases/${testCaseId}/screenshot?token=${encodeURIComponent(getToken() || '')}`
+
+export const reportUrl = (runId) =>
+  `${BASE_URL}/runs/${runId}/report?token=${encodeURIComponent(getToken() || '')}`
+
+export const deleteReport = (runId) => api.delete(`/runs/${runId}/report`)
+
+export const getMe = () => api.get('/auth/me')
+
+export const listUsers = () => api.get('/users')
+
+export const createUser = (username, password, role) =>
+  api.post('/users', { username, password, role: role || 'user' })
 
 export async function login(username, password) {
   const response = await fetch(`${BASE_URL}/auth/login`, {
@@ -99,22 +120,5 @@ export async function login(username, password) {
   return data.token
 }
 
-
-export const reportUrl = (runId) =>
-  `${BASE_URL}/runs/${runId}/report?token=${encodeURIComponent(getToken() || '')}`
-
-export const deleteReport = (runId) => api.delete(`/runs/${runId}/report`)
-
-export const getMe = () => api.get('/auth/me')
-export const listUsers = () => api.get('/users')
-
-export const createUser = (username, password, role) =>
-  api.post('/users', { username, password, role: role || 'user' })
-
-export const createProjectConfig = (name, projectType, workingDirectory, pythonExecutable) =>
-  api.post('/project-configs', {
-    name,
-    project_type: projectType || 'python',
-    working_directory: workingDirectory,
-    python_executable: pythonExecutable || 'python',
-  })
+export const deleteProjectCompletely = (projectName) =>
+  api.delete(`/projects/${encodeURIComponent(projectName)}`)

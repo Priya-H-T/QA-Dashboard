@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { listProjects, listProjectConfigs, createProjectConfig, triggerProjectRun } from './api/client'
+import { listProjects, listProjectConfigs, createProjectConfig, triggerProjectRun, deleteProjectCompletely } from './api/client'
 import { relativeTime } from './StatsBar'
 import { IconLayers, IconCheck, IconX, IconRefresh } from './icons'
 
@@ -110,7 +110,7 @@ function RunTestsModal({ config, onConfirm, onCancel }) {
         <h3 className="modal-title">Open {config.name} in {ideName}</h3>
         <p className="muted modal-desc">
           This opens {ideName} on the project's directory. Run the test you want from
-          inside the IDE \u2014 results will still report back to this dashboard.
+          inside the IDE — results will still report back to this dashboard.
         </p>
         <div className="project-form-actions">
           <button className="icon-btn" onClick={onCancel}>
@@ -178,7 +178,7 @@ function ProjectsStatsBar({ allProjects, configuredCount, testedCount }) {
   )
 }
 
-function ProjectCard({ project, config, onClick, isRunning, onRunClick }) {
+function ProjectCard({ project, config, onClick, isRunning, onRunClick, onDeleteClick }) {
   return (
     <div className="project-card" onClick={onClick}>
       <div className="project-card-header">
@@ -190,23 +190,35 @@ function ProjectCard({ project, config, onClick, isRunning, onRunClick }) {
           <span className="muted project-card-sub">
             {project.total_runs} run{project.total_runs === 1 ? '' : 's'}
             {project.last_run_at ? ` \u00b7 last ${relativeTime(project.last_run_at)}` : ''}
+            {config?.created_by_username ? ` \u00b7 by ${config.created_by_username}` : ''}
           </span>
         </div>
       </div>
 
-      {config && (
+      <div className="project-card-actions">
+        {config && (
+          <button
+            className="icon-btn run-tests-btn"
+            onClick={(e) => {
+              e.stopPropagation()
+              onRunClick(config)
+            }}
+            disabled={isRunning}
+          >
+            <IconRefresh size={13} />
+            {isRunning ? 'Opening...' : 'Run tests'}
+          </button>
+        )}
         <button
-          className="icon-btn run-tests-btn"
+          className="icon-btn reports-delete-btn"
           onClick={(e) => {
             e.stopPropagation()
-            onRunClick(config)
+            onDeleteClick(project)
           }}
-          disabled={isRunning}
         >
-          <IconRefresh size={13} />
-          {isRunning ? 'Opening...' : 'Run tests'}
+          Delete project
         </button>
-      )}
+      </div>
     </div>
   )
 }
@@ -273,6 +285,17 @@ function Projects({ onSelectProject }) {
     }
   }
 
+  const handleDeleteProject = async (project) => {
+    if (!window.confirm(`Permanently delete "${project.name}"? This deletes ALL its runs, test results, screenshots and reports. This cannot be undone.`)) return
+    setError('')
+    try {
+      await deleteProjectCompletely(project.name)
+      await loadAll()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   return (
     <div className="dashboard">
       <ProjectsStatsBar
@@ -307,6 +330,7 @@ function Projects({ onSelectProject }) {
             onClick={() => onSelectProject(project.name)}
             isRunning={configByName[project.name] && runningIds.has(configByName[project.name].id)}
             onRunClick={setRunTarget}
+            onDeleteClick={handleDeleteProject}
           />
         ))}
       </div>

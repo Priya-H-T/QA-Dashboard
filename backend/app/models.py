@@ -98,3 +98,5 @@ class ProjectConfig(Base):
     python_executable = Column(String, nullable=False, default="python")
     created_by = Column(String, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    creator = relationship("User")

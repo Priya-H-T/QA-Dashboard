@@ -3,6 +3,7 @@ import shutil
 import uuid
 import subprocess
 import shlex
+import json
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -399,7 +400,11 @@ def create_project_config(
     db.add(config)
     db.commit()
     db.refresh(config)
-    return config
+    return schemas.ProjectConfigOut(
+        id=config.id, name=config.name, project_type=config.project_type,
+        working_directory=config.working_directory, python_executable=config.python_executable,
+        created_by_username=config.creator.username if config.creator else None,
+    )
 
 
 @app.get("/project-configs", response_model=list[schemas.ProjectConfigOut])
@@ -407,7 +412,60 @@ def list_project_configs(db: Session = Depends(get_db), user: models.User = Depe
     # Project configs (working directory + venv) are shared infrastructure
     # registrations, not personal data like runs/reports — every logged-in
     # user can see and trigger any registered project.
-    return db.query(models.ProjectConfig).order_by(models.ProjectConfig.name).all()
+    configs = db.query(models.ProjectConfig).order_by(models.ProjectConfig.name).all()
+    return [
+        schemas.ProjectConfigOut(
+            id=c.id, name=c.name, project_type=c.project_type,
+            working_directory=c.working_directory, python_executable=c.python_executable,
+            created_by_username=c.creator.username if c.creator else None,
+        )
+        for c in configs
+    ]
+
+
+@app.delete("/project-configs/{config_id}")
+def delete_project_config(
+    config_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    # Deleting the config just removes the registration (and the "Run
+    # tests" button that goes with it) — it doesn't touch any runs
+    # already reported under that project name.
+    config = db.get(models.ProjectConfig, config_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Project config not found")
+
+    db.delete(config)
+    db.commit()
+    return {"status": "deleted"}
+
+
+@app.delete("/projects/{project_name}")
+def delete_project_completely(
+    project_name: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    # Wipes everything tied to this project name: every run, their test
+    # cases (cascades automatically), screenshots and reports on disk,
+    # and the registered config if one exists — even for project names
+    # that were only ever tagged by runs and never formally registered.
+    runs = db.query(models.Run).filter(models.Run.project == project_name).all()
+    for run in runs:
+        for tc in run.test_cases:
+            if tc.screenshot_path and os.path.exists(tc.screenshot_path):
+                os.remove(tc.screenshot_path)
+        if run.report_path and os.path.exists(run.report_path):
+            os.remove(run.report_path)
+        db.delete(run)
+
+    config = db.query(models.ProjectConfig).filter(models.ProjectConfig.name == project_name).first()
+    if config:
+        db.delete(config)
+
+    db.commit()
+    return {"status": "deleted", "runs_deleted": len(runs)}
 
 
 @app.post("/project-configs/{config_id}/trigger")
@@ -438,11 +496,28 @@ def trigger_project_run(
     env["QA_DASHBOARD_API_URL"] = "http://127.0.0.1:8000"
     env["QA_DASHBOARD_PROJECT"] = config.name
 
+    # PyCharm's/IntelliJ's terminal panel does NOT reliably inherit the
+    # environment we set on the launched process (confirmed: even a
+    # freshly-opened instance showed the token as empty in its terminal).
+    # Write a one-time session file into the project directory instead —
+    # conftest.py reads and deletes it, sidestepping IDE env quirks
+    # entirely.
+    session_file_path = os.path.join(config.working_directory, ".qa_dashboard_session.json")
+    try:
+        with open(session_file_path, "w") as f:
+            json.dump({
+                "token": token,
+                "project": config.name,
+                "api_url": "http://127.0.0.1:8000",
+            }, f)
+    except OSError:
+        pass  # working directory not writable — fall back to env vars only
+
     # We can't script a JetBrains IDE to click "Run" on a specific test —
     # there's no public CLI for that. Instead, open the right IDE on the
-    # project directory; run configurations there inherit this process's
-    # environment by default, so results still report back once the
-    # person runs the test themselves from inside the IDE.
+    # project directory; the person runs the test themselves from inside
+    # the IDE, and the session file above (or env vars, as a fallback)
+    # let results still report back to this dashboard.
     # `where pycharm` / `where idea` weren't resolving via PATH even after
     # confirming the .bat files exist and PATH is set correctly — rather
     # than keep fighting Windows PATH resolution, call the launcher by its
