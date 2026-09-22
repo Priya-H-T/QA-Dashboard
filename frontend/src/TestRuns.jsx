@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
-import { listRuns, getRun, listTestCases, screenshotUrl, reportUrl, deleteReport } from './api/client'
-import StatsBar, { relativeTime } from './StatsBar'
+import { listRuns, getRun, listTestCases, screenshotUrl, reportUrl, deleteReport, createIssue, listTestCaseIssues, updateIssueStatus, deleteIssue } from './api/client'
+import StatsBar, { relativeTime, toDate } from './StatsBar'
 import { IconCheck, IconX, IconRefresh, IconCamera, IconLayers, IconArrowLeft } from './icons'
 
 function extractBrowserTag(testName) {
@@ -94,23 +94,48 @@ function ProjectBreakdown({ project }) {
   )
 }
 
+function ConfirmModal({ title, message, confirmLabel, onConfirm, onCancel }) {
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3 className="modal-title">{title}</h3>
+        <p className="muted modal-desc">{message}</p>
+        <div className="project-form-actions">
+          <button className="icon-btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="login-button reports-delete-btn-solid" onClick={onConfirm}>
+            {confirmLabel || 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ReportsSection({ runs, versionById, onDeleted }) {
   const reportedRuns = runs.filter((r) => r.has_report)
+  const [pendingDelete, setPendingDelete] = useState(null)
+  const [deleteError, setDeleteError] = useState('')
+
   if (reportedRuns.length === 0) return null
 
-  const handleDelete = async (run) => {
-    if (!window.confirm(`Delete the report for "${run.name}"? This can't be undone.`)) return
+  const confirmDelete = async () => {
+    const run = pendingDelete
+    setPendingDelete(null)
+    setDeleteError('')
     try {
       await deleteReport(run.id)
       onDeleted()
     } catch (err) {
-      window.alert(`Failed to delete report: ${err.message}`)
+      setDeleteError(err.message)
     }
   }
 
   return (
     <div className="reports-section">
       <h3 className="breakdown-title">Reports</h3>
+      {deleteError && <p className="error-text">{deleteError}</p>}
       <div className="reports-list">
         {reportedRuns.map((run) => (
           <div key={run.id} className="reports-row">
@@ -128,19 +153,152 @@ function ReportsSection({ runs, versionById, onDeleted }) {
             >
               View report
             </a>
-            <button className="icon-btn reports-delete-btn" onClick={() => handleDelete(run)}>
+            <button className="icon-btn reports-delete-btn" onClick={() => setPendingDelete(run)}>
               Delete
             </button>
           </div>
         ))}
       </div>
+
+      {pendingDelete && (
+        <ConfirmModal
+          title="Delete report?"
+          message={`Delete the report for "${pendingDelete.name}"? This can't be undone.`}
+          confirmLabel="Delete report"
+          onConfirm={confirmDelete}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function CreateIssueModal({ defaultTitle, defaultDescription, onCreated, onCancel }) {
+  const [title, setTitle] = useState(defaultTitle)
+  const [description, setDescription] = useState(defaultDescription || '')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setError('')
+    setSaving(true)
+    try {
+      await onCreated(title, description)
+    } catch (err) {
+      setError(err.message)
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <form className="modal-dialog" onClick={(e) => e.stopPropagation()} onSubmit={handleSubmit}>
+        <h3 className="modal-title">Create issue</h3>
+        <label className="field">
+          <span className="field-label">Title</span>
+          <input
+            className="field-input"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            autoFocus
+            required
+          />
+        </label>
+        <label className="field">
+          <span className="field-label">Description</span>
+          <textarea
+            className="field-input issue-textarea"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={5}
+          />
+        </label>
+        {error && <p className="error-text">{error}</p>}
+        <div className="project-form-actions">
+          <button type="button" className="icon-btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="submit" className="login-button" disabled={saving}>
+            {saving ? 'Creating...' : 'Create issue'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function IssuesList({ testCaseId, refreshKey }) {
+  const [issues, setIssues] = useState([])
+  const [error, setError] = useState('')
+
+  const load = useCallback(() => {
+    listTestCaseIssues(testCaseId).then(setIssues).catch((err) => setError(err.message))
+  }, [testCaseId])
+
+  useEffect(() => {
+    load()
+  }, [load, refreshKey])
+
+  const toggleStatus = async (issue) => {
+    try {
+      await updateIssueStatus(issue.id, issue.status === 'open' ? 'resolved' : 'open')
+      load()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const remove = async (issue) => {
+    try {
+      await deleteIssue(issue.id)
+      load()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  if (issues.length === 0 && !error) return null
+
+  return (
+    <div className="issues-list">
+      {error && <p className="error-text">{error}</p>}
+      {issues.map((issue) => (
+        <div key={issue.id} className="issue-row">
+          <span className={`badge ${issue.status === 'open' ? 'badge-fail' : 'badge-pass'}`}>
+            {issue.status}
+          </span>
+          <div className="issue-row-body">
+            <span className="issue-title">{issue.title}</span>
+            {issue.description && <p className="muted issue-description">{issue.description}</p>}
+            <span className="muted issue-meta">
+              {issue.created_by_username ? `by ${issue.created_by_username} \u00b7 ` : ''}
+              {relativeTime(issue.created_at)}
+            </span>
+          </div>
+          <button className="icon-btn" onClick={() => toggleStatus(issue)}>
+            {issue.status === 'open' ? 'Resolve' : 'Reopen'}
+          </button>
+          <button className="icon-btn reports-delete-btn" onClick={() => remove(issue)}>
+            Delete
+          </button>
+        </div>
+      ))}
     </div>
   )
 }
 
 function TestRow({ test }) {
   const [expanded, setExpanded] = useState(false)
+  const [showIssueModal, setShowIssueModal] = useState(false)
+  const [issuesRefreshKey, setIssuesRefreshKey] = useState(0)
   const hasDetails = test.status === 'failed' && Boolean(test.error_message)
+
+  const handleCreateIssue = async (title, description) => {
+    await createIssue(test.id, title, description)
+    setShowIssueModal(false)
+    setIssuesRefreshKey((k) => k + 1)
+  }
 
   return (
     <div className={`test-row test-${test.status}`}>
@@ -152,6 +310,11 @@ function TestRow({ test }) {
           {test.status === 'passed' ? <IconCheck /> : <IconX />}
         </span>
         <span className="mono test-name">{test.name}</span>
+        {test.open_issue_count > 0 && (
+          <span className="badge badge-fail issue-count-badge">
+            {test.open_issue_count} issue{test.open_issue_count === 1 ? '' : 's'}
+          </span>
+        )}
         <span className="muted test-duration">
           {test.duration_seconds?.toFixed(2)}s
         </span>
@@ -176,7 +339,22 @@ function TestRow({ test }) {
               No screenshot captured
             </p>
           )}
+
+          <IssuesList testCaseId={test.id} refreshKey={issuesRefreshKey} />
+
+          <button className="icon-btn create-issue-btn" onClick={() => setShowIssueModal(true)}>
+            + Create issue
+          </button>
         </>
+      )}
+
+      {showIssueModal && (
+        <CreateIssueModal
+          defaultTitle={test.name}
+          defaultDescription={test.error_message}
+          onCreated={handleCreateIssue}
+          onCancel={() => setShowIssueModal(false)}
+        />
       )}
     </div>
   )
@@ -308,7 +486,7 @@ function TestRuns({ project, onBack }) {
                 </h2>
                 <span className="muted">
                   {selectedRun.environment} - {selectedRun.status} -{' '}
-                  {new Date(selectedRun.started_at).toLocaleString()}
+                  {toDate(selectedRun.started_at).toLocaleString()}
                 </span>
                 {selectedRun.has_report && (
                   <a

@@ -50,6 +50,26 @@ class TestCaseOut(BaseModel):
     error_message: Optional[str]
     stack_trace: Optional[str]
     has_screenshot: bool
+    open_issue_count: int = 0
+
+
+class IssueCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+
+
+class IssueUpdate(BaseModel):
+    status: str
+
+
+class IssueOut(BaseModel):
+    id: str
+    test_case_id: str
+    title: str
+    description: Optional[str]
+    status: str
+    created_by_username: Optional[str] = None
+    created_at: datetime
 
 
 class RunDetail(BaseModel):

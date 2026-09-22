@@ -1007,3 +1007,11 @@ body {
   background: var(--panel-alt);
   padding: 12px 20px;
 }
+
+.reports-delete-btn-solid {
+  background: var(--accent-down) !important;
+}
+
+.reports-delete-btn-solid:hover {
+  filter: brightness(1.1);
+}

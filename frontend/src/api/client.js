@@ -122,3 +122,12 @@ export async function login(username, password) {
 
 export const deleteProjectCompletely = (projectName) =>
   api.delete(`/projects/${encodeURIComponent(projectName)}`)
+
+export const createIssue = (testCaseId, title, description) =>
+  api.post(`/testcases/${testCaseId}/issues`, { title, description })
+
+export const listTestCaseIssues = (testCaseId) => api.get(`/testcases/${testCaseId}/issues`)
+
+export const updateIssueStatus = (issueId, status) => api.put(`/issues/${issueId}`, { status })
+
+export const deleteIssue = (issueId) => api.delete(`/issues/${issueId}`)

@@ -65,6 +65,23 @@ class TestCase(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     run = relationship("Run", back_populates="test_cases")
+    issues = relationship("Issue", back_populates="test_case", cascade="all, delete-orphan")
+
+
+class Issue(Base):
+    __tablename__ = "issues"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    test_case_id = Column(String, ForeignKey("test_cases.id"), nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="open")
+    created_by = Column(String, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    test_case = relationship("TestCase", back_populates="issues")
+    creator = relationship("User")
+
 
 
 class User(Base):

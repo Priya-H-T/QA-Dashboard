@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { listProjects, listProjectConfigs, createProjectConfig, triggerProjectRun, deleteProjectCompletely } from './api/client'
+import { listProjects, listProjectConfigs, createProjectConfig, triggerProjectRun, deleteProjectCompletely, getMe } from './api/client'
 import { relativeTime } from './StatsBar'
 import { IconLayers, IconCheck, IconX, IconRefresh } from './icons'
 
@@ -125,6 +125,25 @@ function RunTestsModal({ config, onConfirm, onCancel }) {
   )
 }
 
+function ConfirmModal({ title, message, confirmLabel, onConfirm, onCancel }) {
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3 className="modal-title">{title}</h3>
+        <p className="muted modal-desc">{message}</p>
+        <div className="project-form-actions">
+          <button className="icon-btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="login-button reports-delete-btn-solid" onClick={onConfirm}>
+            {confirmLabel || 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ProjectsStatsBar({ allProjects, configuredCount, testedCount }) {
   const totalRuns = allProjects.reduce((sum, p) => sum + (p.total_runs || 0), 0)
   const totalTests = allProjects.reduce((sum, p) => sum + (p.total_tests || 0), 0)
@@ -178,7 +197,7 @@ function ProjectsStatsBar({ allProjects, configuredCount, testedCount }) {
   )
 }
 
-function ProjectCard({ project, config, onClick, isRunning, onRunClick, onDeleteClick }) {
+function ProjectCard({ project, config, onClick, isRunning, onRunClick, onDeleteClick, canRunTests }) {
   return (
     <div className="project-card" onClick={onClick}>
       <div className="project-card-header">
@@ -196,7 +215,7 @@ function ProjectCard({ project, config, onClick, isRunning, onRunClick, onDelete
       </div>
 
       <div className="project-card-actions">
-        {config && (
+        {config && canRunTests && (
           <button
             className="icon-btn run-tests-btn"
             onClick={(e) => {
@@ -231,6 +250,11 @@ function Projects({ onSelectProject }) {
   const [showForm, setShowForm] = useState(false)
   const [runTarget, setRunTarget] = useState(null)
   const [runningIds, setRunningIds] = useState(() => new Set())
+  const [me, setMe] = useState(null)
+
+  useEffect(() => {
+    getMe().then(setMe).catch(() => setMe(null))
+  }, [])
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -285,8 +309,15 @@ function Projects({ onSelectProject }) {
     }
   }
 
-  const handleDeleteProject = async (project) => {
-    if (!window.confirm(`Permanently delete "${project.name}"? This deletes ALL its runs, test results, screenshots and reports. This cannot be undone.`)) return
+  const [pendingDelete, setPendingDelete] = useState(null)
+
+  const handleDeleteProject = (project) => {
+    setPendingDelete(project)
+  }
+
+  const confirmDeleteProject = async () => {
+    const project = pendingDelete
+    setPendingDelete(null)
     setError('')
     try {
       await deleteProjectCompletely(project.name)
@@ -331,6 +362,10 @@ function Projects({ onSelectProject }) {
             isRunning={configByName[project.name] && runningIds.has(configByName[project.name].id)}
             onRunClick={setRunTarget}
             onDeleteClick={handleDeleteProject}
+            canRunTests={
+              !me || me.role !== 'admin' ||
+              configByName[project.name]?.created_by_username === me.username
+            }
           />
         ))}
       </div>
@@ -350,6 +385,16 @@ function Projects({ onSelectProject }) {
           config={runTarget}
           onConfirm={handleConfirmRun}
           onCancel={() => setRunTarget(null)}
+        />
+      )}
+
+      {pendingDelete && (
+        <ConfirmModal
+          title={`Delete "${pendingDelete.name}"?`}
+          message="This permanently deletes ALL its runs, test results, screenshots and reports. This cannot be undone."
+          confirmLabel="Delete project"
+          onConfirm={confirmDeleteProject}
+          onCancel={() => setPendingDelete(null)}
         />
       )}
     </div>

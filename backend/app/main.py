@@ -209,6 +209,7 @@ def get_run(run_id: str, db: Session = Depends(get_db), user: models.User = Depe
             id=tc.id, name=tc.name, suite=tc.suite, status=tc.status,
             duration_seconds=tc.duration_seconds, error_message=tc.error_message,
             stack_trace=tc.stack_trace, has_screenshot=bool(tc.screenshot_path),
+            open_issue_count=sum(1 for i in tc.issues if i.status == "open"),
         ))
 
     return schemas.RunDetail(
@@ -335,6 +336,100 @@ def get_screenshot(test_case_id: str, db: Session = Depends(get_db), user: model
     if not _is_admin(user) and tc.run.created_by != user.id:
         raise HTTPException(status_code=403, detail="Not authorized to view this screenshot")
     return FileResponse(tc.screenshot_path)
+
+
+@app.post("/testcases/{test_case_id}/issues", response_model=schemas.IssueOut)
+def create_issue(
+    test_case_id: str,
+    payload: schemas.IssueCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    tc = db.get(models.TestCase, test_case_id)
+    if not tc:
+        raise HTTPException(status_code=404, detail="Test case not found")
+    if not _is_admin(user) and tc.run.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to file an issue on this test case")
+
+    issue = models.Issue(
+        test_case_id=test_case_id,
+        title=payload.title,
+        description=payload.description,
+        created_by=user.id,
+    )
+    db.add(issue)
+    db.commit()
+    db.refresh(issue)
+    return schemas.IssueOut(
+        id=issue.id, test_case_id=issue.test_case_id, title=issue.title,
+        description=issue.description, status=issue.status,
+        created_by_username=issue.creator.username if issue.creator else None,
+        created_at=issue.created_at,
+    )
+
+
+@app.get("/testcases/{test_case_id}/issues", response_model=list[schemas.IssueOut])
+def list_issues_for_test_case(
+    test_case_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    tc = db.get(models.TestCase, test_case_id)
+    if not tc:
+        raise HTTPException(status_code=404, detail="Test case not found")
+    if not _is_admin(user) and tc.run.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to view issues on this test case")
+
+    return [
+        schemas.IssueOut(
+            id=i.id, test_case_id=i.test_case_id, title=i.title,
+            description=i.description, status=i.status,
+            created_by_username=i.creator.username if i.creator else None,
+            created_at=i.created_at,
+        )
+        for i in sorted(tc.issues, key=lambda x: x.created_at, reverse=True)
+    ]
+
+
+@app.put("/issues/{issue_id}", response_model=schemas.IssueOut)
+def update_issue(
+    issue_id: str,
+    payload: schemas.IssueUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    issue = db.get(models.Issue, issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    if not _is_admin(user) and issue.test_case.run.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to update this issue")
+
+    issue.status = payload.status
+    db.commit()
+    db.refresh(issue)
+    return schemas.IssueOut(
+        id=issue.id, test_case_id=issue.test_case_id, title=issue.title,
+        description=issue.description, status=issue.status,
+        created_by_username=issue.creator.username if issue.creator else None,
+        created_at=issue.created_at,
+    )
+
+
+@app.delete("/issues/{issue_id}")
+def delete_issue(
+    issue_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    issue = db.get(models.Issue, issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    if not _is_admin(user) and issue.test_case.run.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this issue")
+
+    db.delete(issue)
+    db.commit()
+    return {"status": "deleted"}
 
 
 @app.post("/runs/{run_id}/report")
