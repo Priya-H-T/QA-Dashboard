@@ -131,3 +131,5 @@ export const listTestCaseIssues = (testCaseId) => api.get(`/testcases/${testCase
 export const updateIssueStatus = (issueId, status) => api.put(`/issues/${issueId}`, { status })
 
 export const deleteIssue = (issueId) => api.delete(`/issues/${issueId}`)
+
+export const listIssues = () => api.get('/issues')

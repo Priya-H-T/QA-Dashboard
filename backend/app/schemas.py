@@ -161,3 +161,19 @@ class UserCreate(BaseModel):
     username: str
     password: str
     role: Optional[str] = "user"
+
+class IssueListItem(BaseModel):
+    id: str
+    test_case_id: str
+    title: str
+    description: Optional[str] = None
+    status: str
+    created_by_username: Optional[str] = None
+    created_at: datetime
+    test_case_name: str
+    run_id: str
+    run_name: str
+    project: Optional[str] = None
+
+    class Config:
+        from_attributes = True

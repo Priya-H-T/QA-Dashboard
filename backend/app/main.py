@@ -2,7 +2,6 @@ import os
 import shutil
 import uuid
 import subprocess
-import shlex
 import json
 from datetime import datetime, timedelta
 from typing import Optional
@@ -10,6 +9,7 @@ from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Header, Query
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .security import hash_password, verify_password, generate_token
@@ -25,9 +25,35 @@ ensure_columns(engine, "runs", {
     "report_path": "TEXT",
     "project": "TEXT",
 })
-ensure_columns(engine, "users", {
-    "role": "TEXT DEFAULT 'user'",
-})
+
+# Deliberately NOT "TEXT DEFAULT 'user'" here — SQLite backfills that
+# default into every existing row on ADD COLUMN, which would silently
+# flip an existing account that was meant to be admin over to 'user'
+# with no record of it happening. Add the column bare (existing rows
+# land on NULL), then do the backfill ourselves, explicitly, once,
+# with a printed record of what we did.
+_role_added = ensure_columns(engine, "users", {"role": "TEXT"})
+if "role" in _role_added:
+    with engine.begin() as _conn:
+        _existing_users = _conn.execute(
+            text("SELECT id, username FROM users WHERE role IS NULL ORDER BY created_at ASC")
+        ).fetchall()
+        if _existing_users:
+            _admin_id, _admin_username = _existing_users[0]
+            _conn.execute(
+                text("UPDATE users SET role = 'admin' WHERE id = :id"),
+                {"id": _admin_id},
+            )
+            print(f"[migration] role column added — promoted earliest existing account "
+                  f"'{_admin_username}' to admin.")
+            _others = _existing_users[1:]
+            if _others:
+                _conn.execute(text("UPDATE users SET role = 'user' WHERE role IS NULL"))
+                print(f"[migration] set role='user' for {len(_others)} other existing "
+                      f"account(s): {', '.join(u[1] for u in _others)}.")
+            print("[migration] VERIFY: if the promoted account above isn't the right one, "
+                  "fix it now with: UPDATE users SET role='admin' WHERE username='<you>';")
+
 ensure_columns(engine, "project_configs", {
     "project_type": "TEXT DEFAULT 'python'",
 })
@@ -42,7 +68,10 @@ app = FastAPI(title="QA Dashboard API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://192.168.1.6:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -431,6 +460,30 @@ def delete_issue(
     db.commit()
     return {"status": "deleted"}
 
+@app.get("/issues", response_model=list[schemas.IssueListItem])
+def list_all_issues(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    query = db.query(models.Issue).join(models.TestCase).join(models.Run)
+    if not _is_admin(user):
+        query = query.filter(models.Run.created_by == user.id)
+    issues = query.order_by(models.Issue.created_at.desc()).all()
+
+    return [
+        schemas.IssueListItem(
+            id=i.id, test_case_id=i.test_case_id, title=i.title,
+            description=i.description, status=i.status,
+            created_by_username=i.creator.username if i.creator else None,
+            created_at=i.created_at,
+            test_case_name=i.test_case.name,
+            run_id=i.test_case.run_id,
+            run_name=i.test_case.run.name,
+            project=i.test_case.run.project,
+        )
+        for i in issues
+    ]
+
 
 @app.post("/runs/{run_id}/report")
 def upload_report(run_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -504,10 +557,15 @@ def create_project_config(
 
 @app.get("/project-configs", response_model=list[schemas.ProjectConfigOut])
 def list_project_configs(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    # Project configs (working directory + venv) are shared infrastructure
-    # registrations, not personal data like runs/reports — every logged-in
-    # user can see and trigger any registered project.
-    configs = db.query(models.ProjectConfig).order_by(models.ProjectConfig.name).all()
+    # Project configs used to be treated as shared infrastructure that
+    # every logged-in user could see and trigger. That's now changed:
+    # admins see every registered project; normal users only see the
+    # ones they registered themselves, so users can't see or run each
+    # other's projects.
+    query = db.query(models.ProjectConfig)
+    if not _is_admin(user):
+        query = query.filter(models.ProjectConfig.created_by == user.id)
+    configs = query.order_by(models.ProjectConfig.name).all()
     return [
         schemas.ProjectConfigOut(
             id=c.id, name=c.name, project_type=c.project_type,
@@ -530,6 +588,8 @@ def delete_project_config(
     config = db.get(models.ProjectConfig, config_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project config not found")
+    if not _is_admin(user) and config.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this project")
 
     db.delete(config)
     db.commit()
@@ -546,7 +606,19 @@ def delete_project_completely(
     # cases (cascades automatically), screenshots and reports on disk,
     # and the registered config if one exists — even for project names
     # that were only ever tagged by runs and never formally registered.
+    #
+    # A non-admin may only do this if they own everything involved: all
+    # matching runs, and the config if one exists. Otherwise they'd be,
+    # able to wipe another user's project just by knowing its name.
     runs = db.query(models.Run).filter(models.Run.project == project_name).all()
+    config = db.query(models.ProjectConfig).filter(models.ProjectConfig.name == project_name).first()
+
+    if not _is_admin(user):
+        not_owned_run = any(r.created_by != user.id for r in runs)
+        not_owned_config = config is not None and config.created_by != user.id
+        if not_owned_run or not_owned_config:
+            raise HTTPException(status_code=403, detail="Not authorized to delete this project")
+
     for run in runs:
         for tc in run.test_cases:
             if tc.screenshot_path and os.path.exists(tc.screenshot_path):
@@ -555,7 +627,6 @@ def delete_project_completely(
             os.remove(run.report_path)
         db.delete(run)
 
-    config = db.query(models.ProjectConfig).filter(models.ProjectConfig.name == project_name).first()
     if config:
         db.delete(config)
 
@@ -573,6 +644,8 @@ def trigger_project_run(
     config = db.get(models.ProjectConfig, config_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project config not found")
+    if not _is_admin(user) and config.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to run this project")
 
     if not os.path.isdir(config.working_directory):
         raise HTTPException(status_code=400, detail=f"Working directory not found: {config.working_directory}")

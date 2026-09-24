@@ -6,6 +6,7 @@ import Login from './Login'
 import { clearToken, getToken, getMe } from './api/client'
 import { IconSun, IconMoon } from './icons'
 import './App.css'
+import Issues from './Issues'   // add near your other imports
 
 function App() {
   const [tab, setTab] = useState('projects')
@@ -85,6 +86,9 @@ function App() {
               <button className={`tab ${tab === 'projects' ? 'active' : ''}`} onClick={() => handleTabChange('projects')}>
                 Projects
               </button>
+              <button className={`tab ${tab === 'issues' ? 'active' : ''}`} onClick={() => handleTabChange('issues')}>
+                Issues
+               </button>
               {isAdmin && (
                 <button className={`tab ${tab === 'users' ? 'active' : ''}`} onClick={() => handleTabChange('users')}>
                   Users
@@ -111,6 +115,14 @@ function App() {
         {tab === 'projects' && selectedProject && (
           <TestRuns project={selectedProject} onBack={() => setSelectedProject(null)} />
         )}
+        {tab === 'issues' && (
+         <Issues
+            onSelectProject={(project) => {
+            setSelectedProject(project)
+            setTab('projects')
+    }}
+  />
+)}
         {tab === 'users' && isAdmin && <Users />}
       </div>
     </div>

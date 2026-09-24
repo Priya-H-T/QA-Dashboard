@@ -127,13 +127,13 @@ function Users() {
           <div className="users-row users-row-head">
             <span>Username</span>
             <span>Role</span>
-            <span>Created</span>
+
           </div>
           {users.map((u) => (
             <div key={u.id} className="users-row">
               <span className="mono">{u.username}</span>
               <span className={`badge ${u.role === 'admin' ? 'badge-pass' : ''}`}>{u.role}</span>
-              <span className="muted">{relativeTime(u.created_at)}</span>
+
             </div>
           ))}
         </div>
