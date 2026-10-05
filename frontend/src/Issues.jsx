@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
-import { listIssues, updateIssueStatus, deleteIssue } from './api/client'
+import { listIssues, updateIssueStatus, deleteIssue, screenshotUrl } from './api/client'
 import { relativeTime } from './StatsBar'
 import { IconCheck, IconX, IconRefresh } from './icons'
 
@@ -113,6 +113,15 @@ function IssueCard({ issue, onToggleStatus, onDelete, onViewProject, busy }) {
       </div>
 
       <IssueDescription description={issue.description} />
+
+      {issue.has_screenshot && (
+        <img
+          className="screenshot-thumb"
+          src={screenshotUrl(issue.test_case_id)}
+          alt={`Screenshot for ${issue.test_case_name}`}
+          onClick={() => window.open(screenshotUrl(issue.test_case_id), '_blank')}
+        />
+      )}
 
       <p className="muted issue-card-meta">
         {issue.project ? (

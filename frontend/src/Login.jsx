@@ -12,8 +12,8 @@ function Login({ onLogin }) {
     setError('')
     setLoading(true)
     try {
-      await login(username, password)
-      onLogin()
+      const data = await login(username, password)
+      onLogin(data)
     } catch (err) {
       setError(err.message)
     } finally {

@@ -92,6 +92,7 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     password_salt = Column(String, nullable=False)
     role = Column(String, nullable=False, default="user")
+    must_change_password = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 

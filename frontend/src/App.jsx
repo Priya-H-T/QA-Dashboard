@@ -3,10 +3,30 @@ import TestRuns from './TestRuns'
 import Projects from './Projects'
 import Users from './Users'
 import Login from './Login'
+import ChangePassword from './ChangePassword'
 import { clearToken, getToken, getMe } from './api/client'
 import { IconSun, IconMoon } from './icons'
 import './App.css'
 import Issues from './Issues'   // add near your other imports
+
+function ConfirmModal({ title, message, confirmLabel, onConfirm, onCancel }) {
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3 className="modal-title">{title}</h3>
+        <p className="muted modal-desc">{message}</p>
+        <div className="project-form-actions">
+          <button className="icon-btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="login-button reports-delete-btn-solid" onClick={onConfirm}>
+            {confirmLabel || 'Confirm'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function App() {
   const [tab, setTab] = useState('projects')
@@ -19,6 +39,13 @@ function App() {
   const [authed, setAuthed] = useState(false)
   const [checkingAuth, setCheckingAuth] = useState(true)
   const [me, setMe] = useState(null)
+  // Mirrors the backend's must_change_password flag. Set from whichever
+  // response reaches us first — the /auth/login payload (fastest path,
+  // right after signing in) or /auth/me (token-restore-on-refresh path) —
+  // and gates the entire dashboard below, before Projects/Issues/Users
+  // ever get a chance to mount and hit a 403 from the API.
+  const [forcePasswordChange, setForcePasswordChange] = useState(false)
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
@@ -34,6 +61,7 @@ function App() {
       .then((data) => {
         setMe(data)
         setAuthed(true)
+        setForcePasswordChange(!!data.must_change_password)
       })
       .catch(() => {
         clearToken()
@@ -47,18 +75,46 @@ function App() {
       setMe(null)
       return
     }
-    getMe().then(setMe).catch(() => setMe(null))
+    getMe()
+      .then((data) => {
+        setMe(data)
+        setForcePasswordChange(!!data.must_change_password)
+      })
+      .catch(() => setMe(null))
   }, [authed])
 
   if (checkingAuth) {
     return null
   }
 
-  if (!authed) {
-    return <Login onLogin={() => setAuthed(true)} />
+  const handleLogin = (loginData) => {
+    setAuthed(true)
+    setForcePasswordChange(!!loginData?.must_change_password)
   }
 
-  const handleLogout = () => {
+  if (!authed) {
+    return <Login onLogin={handleLogin} />
+  }
+
+  const handlePasswordChanged = () => {
+    setForcePasswordChange(false)
+    // Refresh /auth/me so `me` (role, etc.) reflects the now-unlocked
+    // account rather than whatever partial state we had before.
+    getMe().then(setMe).catch(() => {})
+  }
+
+  const handleForceLogout = () => {
+    clearToken()
+    setAuthed(false)
+    setForcePasswordChange(false)
+  }
+
+  if (forcePasswordChange) {
+    return <ChangePassword onSuccess={handlePasswordChanged} onLogout={handleForceLogout} />
+  }
+
+  const confirmLogout = () => {
+    setShowLogoutConfirm(false)
     clearToken()
     setAuthed(false)
   }
@@ -103,7 +159,7 @@ function App() {
               {theme === 'dark' ? <IconSun /> : <IconMoon />}
               {theme === 'dark' ? 'Light' : 'Dark'}
             </button>
-            <button className="theme-toggle" onClick={handleLogout} title="Log out">
+            <button className="theme-toggle" onClick={() => setShowLogoutConfirm(true)} title="Log out">
               Log out
             </button>
           </div>
@@ -125,6 +181,16 @@ function App() {
 )}
         {tab === 'users' && isAdmin && <Users />}
       </div>
+
+      {showLogoutConfirm && (
+        <ConfirmModal
+          title="Log out?"
+          message="You'll need to sign in again to access the dashboard."
+          confirmLabel="Log out"
+          onConfirm={confirmLogout}
+          onCancel={() => setShowLogoutConfirm(false)}
+        />
+      )}
     </div>
   )
 }

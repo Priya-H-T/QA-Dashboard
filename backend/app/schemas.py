@@ -70,6 +70,7 @@ class IssueOut(BaseModel):
     status: str
     created_by_username: Optional[str] = None
     created_at: datetime
+    has_screenshot: bool = False
 
 
 class RunDetail(BaseModel):
@@ -93,6 +94,7 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     token: str
+    must_change_password: bool = False
 
 
 class TestCaseListItem(BaseModel):
@@ -150,11 +152,13 @@ class UserOut(BaseModel):
     username: str
     role: str
     created_at: datetime
+    must_change_password: bool = False
 
 
 class MeResponse(BaseModel):
     username: str
     role: str
+    must_change_password: bool = False
 
 
 class UserCreate(BaseModel):
@@ -174,6 +178,7 @@ class IssueListItem(BaseModel):
     run_id: str
     run_name: str
     project: Optional[str] = None
+    has_screenshot: bool = False
 
     class Config:
         from_attributes = True

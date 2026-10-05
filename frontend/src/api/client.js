@@ -13,6 +13,18 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
 }
 
+// FastAPI sends `detail` as a plain string for most errors, but as an
+// array of {msg, ...} objects for pydantic validation errors (422s) —
+// e.g. the new 8-character minimum on new_password. Without this, an
+// array would fall through to JSON.stringify and show up to the user as
+// a wall of raw JSON (or, via template-string coercion, "[object Object]").
+function formatErrorDetail(body, fallback) {
+  if (Array.isArray(body?.detail)) {
+    return body.detail.map((d) => d.msg || JSON.stringify(d)).join('; ')
+  }
+  return body?.detail || fallback
+}
+
 async function request(path, options = {}) {
   const url = `${BASE_URL}${path}`
   const token = getToken()
@@ -39,7 +51,7 @@ async function request(path, options = {}) {
     let detail = response.statusText
     try {
       const body = await response.json()
-      detail = body.detail || JSON.stringify(body)
+      detail = formatErrorDetail(body, response.statusText)
     } catch {
       // response wasn't JSON
     }
@@ -109,16 +121,25 @@ export async function login(username, password) {
     let detail = 'Invalid username or password'
     try {
       const body = await response.json()
-      detail = body.detail || detail
+      detail = formatErrorDetail(body, detail)
     } catch {
       // ignore
     }
     throw new Error(detail)
   }
+  // Return the full payload (token + must_change_password), not just the
+  // token, so the caller can route a forced-password-change user straight
+  // to that screen without waiting on a second /auth/me round trip.
   const data = await response.json()
   setToken(data.token)
-  return data.token
+  return data
 }
+
+export const changePassword = (currentPassword, newPassword) =>
+  api.post('/auth/change-password', {
+    current_password: currentPassword,
+    new_password: newPassword,
+  })
 
 export const deleteProjectCompletely = (projectName) =>
   api.delete(`/projects/${encodeURIComponent(projectName)}`)

@@ -72,7 +72,11 @@ def pytest_runtest_makereport(item, call):
     }
 
     try:
-        resp = requests.post(f"{API_BASE_URL}/runs/{_run_id}/testcases", json=payload)
+        resp = requests.post(
+            f"{API_BASE_URL}/runs/{_run_id}/testcases",
+            json=payload,
+            headers=_auth_headers,
+        )
         resp.raise_for_status()
         test_case_id = resp.json()["test_case_id"]
     except Exception as e:
@@ -93,6 +97,7 @@ def pytest_runtest_makereport(item, call):
                     requests.post(
                         f"{API_BASE_URL}/testcases/{test_case_id}/screenshot",
                         files={"file": (f"{item.name}.png", f, "image/png")},
+                        headers=_auth_headers,
                     )
             except Exception as e:
                 print(f"\n[qa-dashboard] Failed to upload screenshot for '{item.nodeid}': {e}")
@@ -104,7 +109,10 @@ def pytest_sessionfinish(session, exitstatus):
         return
 
     try:
-        resp = requests.post(f"{API_BASE_URL}/runs/{_run_id}/finish")
+        resp = requests.post(
+            f"{API_BASE_URL}/runs/{_run_id}/finish",
+            headers=_auth_headers,
+        )
         resp.raise_for_status()
     except Exception as e:
         print(f"\n[qa-dashboard] Failed to mark run finished: {e}")
@@ -116,6 +124,7 @@ def pytest_sessionfinish(session, exitstatus):
                 resp = requests.post(
                     f"{API_BASE_URL}/runs/{_run_id}/report",
                     files={"file": (os.path.basename(report_path), f, "text/html")},
+                    headers=_auth_headers,
                 )
                 resp.raise_for_status()
             print(f"\n[qa-dashboard] Report uploaded for run {_run_id}")

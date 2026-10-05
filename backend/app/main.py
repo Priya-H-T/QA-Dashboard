@@ -1,14 +1,14 @@
 import os
-import shutil
 import uuid
 import subprocess
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Header, Query
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -54,6 +54,13 @@ if "role" in _role_added:
             print("[migration] VERIFY: if the promoted account above isn't the right one, "
                   "fix it now with: UPDATE users SET role='admin' WHERE username='<you>';")
 
+# Unlike `role` above, a plain DEFAULT here is fine: existing accounts
+# (created before this feature existed) should NOT suddenly be forced to
+# change their password, so they all correctly backfill to false/0.
+# Only accounts created going forward via create_user_endpoint get this
+# flag set to true.
+ensure_columns(engine, "users", {"must_change_password": "BOOLEAN DEFAULT 0"})
+
 ensure_columns(engine, "project_configs", {
     "project_type": "TEXT DEFAULT 'python'",
 })
@@ -80,6 +87,13 @@ app.add_middleware(
 SESSION_LIFETIME = timedelta(days=7)
 
 
+def _utcnow() -> datetime:
+    # datetime.utcnow() is deprecated (scheduled for removal); this gives
+    # the same naive-UTC value it used to, so it still compares cleanly
+    # against the naive DateTime columns already stored in the DB.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def get_current_user(
     authorization: Optional[str] = Header(None),
     token: Optional[str] = Query(None),
@@ -95,7 +109,7 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     session = db.query(models.Session).filter(models.Session.token == raw_token).first()
-    if not session or session.expires_at < datetime.utcnow():
+    if not session or session.expires_at < _utcnow():
         raise HTTPException(status_code=401, detail="Session expired or invalid")
 
     user = db.get(models.User, session.user_id)
@@ -106,6 +120,32 @@ def get_current_user(
 
 def _is_admin(user: models.User) -> bool:
     return user.role == "admin"
+
+
+def get_current_active_user(
+    user: models.User = Depends(get_current_user),
+) -> models.User:
+    # Same as get_current_user, but additionally blocks any user who still
+    # has an admin-assigned password they haven't changed yet. Every
+    # endpoint that lets someone actually use the dashboard depends on
+    # this instead of get_current_user directly. The two exceptions are
+    # /auth/me (so the frontend can find out a change is required) and
+    # /auth/change-password (so the user has a way to satisfy it) — those
+    # keep using get_current_user.
+    if user.must_change_password:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "password_change_required",
+                "message": "You must change your password before continuing.",
+            },
+        )
+    return user
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
 
 
 @app.get("/health")
@@ -123,20 +163,44 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
     session = models.Session(
         user_id=user.id,
         token=token,
-        expires_at=datetime.utcnow() + SESSION_LIFETIME,
+        expires_at=_utcnow() + SESSION_LIFETIME,
     )
     db.add(session)
     db.commit()
-    return {"token": token}
+    return {"token": token, "must_change_password": user.must_change_password}
 
 
 @app.get("/auth/me", response_model=schemas.MeResponse)
 def get_me(user: models.User = Depends(get_current_user)):
-    return schemas.MeResponse(username=user.username, role=user.role)
+    return schemas.MeResponse(
+        username=user.username, role=user.role,
+        must_change_password=user.must_change_password,
+    )
+
+
+@app.post("/auth/change-password")
+def change_password(
+    payload: PasswordChangeRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, user.password_salt, user.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=400, detail="New password must be different from the current password")
+
+    salt, password_hash = hash_password(payload.new_password)
+    user.password_salt = salt
+    user.password_hash = password_hash
+    user.must_change_password = False
+    db.commit()
+
+    return {"status": "password changed"}
 
 
 @app.get("/users", response_model=list[schemas.UserOut])
-def list_users(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def list_users(db: Session = Depends(get_db), user: models.User = Depends(get_current_active_user)):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Admin access required")
     return db.query(models.User).order_by(models.User.username).all()
@@ -146,7 +210,7 @@ def list_users(db: Session = Depends(get_db), user: models.User = Depends(get_cu
 def create_user_endpoint(
     payload: schemas.UserCreate,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Admin access required")
@@ -162,6 +226,9 @@ def create_user_endpoint(
         password_hash=password_hash,
         password_salt=salt,
         role=role,
+        # The admin picked this password, not the user — require them to
+        # set their own before they can do anything else with it.
+        must_change_password=True,
     )
     db.add(new_user)
     db.commit()
@@ -173,7 +240,7 @@ def create_user_endpoint(
 def create_run(
     payload: schemas.RunCreate,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     run = models.Run(
         name=payload.name, environment=payload.environment,
@@ -186,12 +253,18 @@ def create_run(
 
 
 @app.post("/runs/{run_id}/finish")
-def finish_run(run_id: str, db: Session = Depends(get_db)):
+def finish_run(
+    run_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_active_user),
+):
     run = db.get(models.Run, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
+    if not _is_admin(user) and run.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to finish this run")
     run.status = models.RunStatus.finished
-    run.finished_at = datetime.utcnow()
+    run.finished_at = _utcnow()
     db.commit()
     return {"status": "finished"}
 
@@ -200,7 +273,7 @@ def finish_run(run_id: str, db: Session = Depends(get_db)):
 def list_runs(
     project: Optional[str] = None,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     query = db.query(models.Run)
     if not _is_admin(user):
@@ -224,7 +297,7 @@ def list_runs(
 
 
 @app.get("/runs/{run_id}", response_model=schemas.RunDetail)
-def get_run(run_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def get_run(run_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_active_user)):
     run = db.get(models.Run, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -252,7 +325,7 @@ def get_run(run_id: str, db: Session = Depends(get_db), user: models.User = Depe
 
 
 @app.get("/projects", response_model=list[schemas.ProjectSummary])
-def list_projects(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def list_projects(db: Session = Depends(get_db), user: models.User = Depends(get_current_active_user)):
     project_query = db.query(models.Run.project).filter(models.Run.project.isnot(None))
     if not _is_admin(user):
         project_query = project_query.filter(models.Run.created_by == user.id)
@@ -280,10 +353,17 @@ def list_projects(db: Session = Depends(get_db), user: models.User = Depends(get
 
 
 @app.post("/runs/{run_id}/testcases", response_model=dict)
-def create_test_case(run_id: str, payload: schemas.TestCaseCreate, db: Session = Depends(get_db)):
+def create_test_case(
+    run_id: str,
+    payload: schemas.TestCaseCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_active_user),
+):
     run = db.get(models.Run, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
+    if not _is_admin(user) and run.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to add test cases to this run")
 
     tc = models.TestCase(
         run_id=run_id, name=payload.name, suite=payload.suite, status=payload.status,
@@ -304,7 +384,7 @@ def list_test_cases(
     project: Optional[str] = None,
     search: Optional[str] = None,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     query = db.query(models.TestCase).join(models.Run)
     if not _is_admin(user):
@@ -340,17 +420,25 @@ def list_test_cases(
 
 
 @app.post("/testcases/{test_case_id}/screenshot")
-def upload_screenshot(test_case_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def upload_screenshot(
+    test_case_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_active_user),
+):
     tc = db.get(models.TestCase, test_case_id)
     if not tc:
         raise HTTPException(status_code=404, detail="Test case not found")
+    if not _is_admin(user) and tc.run.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to upload a screenshot for this test case")
 
     ext = os.path.splitext(file.filename or "")[1] or ".png"
     filename = f"{uuid.uuid4()}{ext}"
     dest_path = os.path.join(SCREENSHOT_DIR, filename)
 
     with open(dest_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        while chunk := file.file.read(1024 * 1024):
+            f.write(chunk)
 
     tc.screenshot_path = dest_path
     db.commit()
@@ -358,7 +446,7 @@ def upload_screenshot(test_case_id: str, file: UploadFile = File(...), db: Sessi
 
 
 @app.get("/testcases/{test_case_id}/screenshot")
-def get_screenshot(test_case_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def get_screenshot(test_case_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_active_user)):
     tc = db.get(models.TestCase, test_case_id)
     if not tc or not tc.screenshot_path or not os.path.exists(tc.screenshot_path):
         raise HTTPException(status_code=404, detail="Screenshot not found")
@@ -372,7 +460,7 @@ def create_issue(
     test_case_id: str,
     payload: schemas.IssueCreate,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     tc = db.get(models.TestCase, test_case_id)
     if not tc:
@@ -394,6 +482,7 @@ def create_issue(
         description=issue.description, status=issue.status,
         created_by_username=issue.creator.username if issue.creator else None,
         created_at=issue.created_at,
+        has_screenshot=bool(tc.screenshot_path),
     )
 
 
@@ -401,7 +490,7 @@ def create_issue(
 def list_issues_for_test_case(
     test_case_id: str,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     tc = db.get(models.TestCase, test_case_id)
     if not tc:
@@ -415,6 +504,7 @@ def list_issues_for_test_case(
             description=i.description, status=i.status,
             created_by_username=i.creator.username if i.creator else None,
             created_at=i.created_at,
+            has_screenshot=bool(tc.screenshot_path),
         )
         for i in sorted(tc.issues, key=lambda x: x.created_at, reverse=True)
     ]
@@ -425,7 +515,7 @@ def update_issue(
     issue_id: str,
     payload: schemas.IssueUpdate,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     issue = db.get(models.Issue, issue_id)
     if not issue:
@@ -441,6 +531,7 @@ def update_issue(
         description=issue.description, status=issue.status,
         created_by_username=issue.creator.username if issue.creator else None,
         created_at=issue.created_at,
+        has_screenshot=bool(issue.test_case.screenshot_path),
     )
 
 
@@ -448,7 +539,7 @@ def update_issue(
 def delete_issue(
     issue_id: str,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     issue = db.get(models.Issue, issue_id)
     if not issue:
@@ -463,7 +554,7 @@ def delete_issue(
 @app.get("/issues", response_model=list[schemas.IssueListItem])
 def list_all_issues(
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     query = db.query(models.Issue).join(models.TestCase).join(models.Run)
     if not _is_admin(user):
@@ -480,22 +571,31 @@ def list_all_issues(
             run_id=i.test_case.run_id,
             run_name=i.test_case.run.name,
             project=i.test_case.run.project,
+            has_screenshot=bool(i.test_case.screenshot_path),
         )
         for i in issues
     ]
 
 
 @app.post("/runs/{run_id}/report")
-def upload_report(run_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def upload_report(
+    run_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_active_user),
+):
     run = db.get(models.Run, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
+    if not _is_admin(user) and run.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to upload a report for this run")
 
     filename = f"{uuid.uuid4()}.html"
     dest_path = os.path.join(REPORT_DIR, filename)
 
     with open(dest_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        while chunk := file.file.read(1024 * 1024):
+            f.write(chunk)
 
     run.report_path = dest_path
     db.commit()
@@ -503,7 +603,7 @@ def upload_report(run_id: str, file: UploadFile = File(...), db: Session = Depen
 
 
 @app.get("/runs/{run_id}/report")
-def get_report(run_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def get_report(run_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_active_user)):
     run = db.get(models.Run, run_id)
     if not run or not run.report_path or not os.path.exists(run.report_path):
         raise HTTPException(status_code=404, detail="Report not found")
@@ -513,7 +613,7 @@ def get_report(run_id: str, db: Session = Depends(get_db), user: models.User = D
 
 
 @app.delete("/runs/{run_id}/report")
-def delete_report(run_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def delete_report(run_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_active_user)):
     run = db.get(models.Run, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -532,7 +632,7 @@ def delete_report(run_id: str, db: Session = Depends(get_db), user: models.User 
 def create_project_config(
     payload: schemas.ProjectConfigCreate,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     existing = db.query(models.ProjectConfig).filter(models.ProjectConfig.name == payload.name).first()
     if existing:
@@ -556,7 +656,7 @@ def create_project_config(
 
 
 @app.get("/project-configs", response_model=list[schemas.ProjectConfigOut])
-def list_project_configs(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def list_project_configs(db: Session = Depends(get_db), user: models.User = Depends(get_current_active_user)):
     # Project configs used to be treated as shared infrastructure that
     # every logged-in user could see and trigger. That's now changed:
     # admins see every registered project; normal users only see the
@@ -580,7 +680,7 @@ def list_project_configs(db: Session = Depends(get_db), user: models.User = Depe
 def delete_project_config(
     config_id: str,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     # Deleting the config just removes the registration (and the "Run
     # tests" button that goes with it) — it doesn't touch any runs
@@ -600,7 +700,7 @@ def delete_project_config(
 def delete_project_completely(
     project_name: str,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     # Wipes everything tied to this project name: every run, their test
     # cases (cascades automatically), screenshots and reports on disk,
@@ -608,7 +708,7 @@ def delete_project_completely(
     # that were only ever tagged by runs and never formally registered.
     #
     # A non-admin may only do this if they own everything involved: all
-    # matching runs, and the config if one exists. Otherwise they'd be,
+    # matching runs, and the config if one exists. Otherwise they'd be
     # able to wipe another user's project just by knowing its name.
     runs = db.query(models.Run).filter(models.Run.project == project_name).all()
     config = db.query(models.ProjectConfig).filter(models.ProjectConfig.name == project_name).first()
@@ -637,15 +737,20 @@ def delete_project_completely(
 @app.post("/project-configs/{config_id}/trigger")
 def trigger_project_run(
     config_id: str,
-    payload: schemas.TriggerRunRequest = None,
+    payload: Optional[schemas.TriggerRunRequest] = None,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(get_current_active_user),
 ):
     config = db.get(models.ProjectConfig, config_id)
     if not config:
         raise HTTPException(status_code=404, detail="Project config not found")
     if not _is_admin(user) and config.created_by != user.id:
         raise HTTPException(status_code=403, detail="Not authorized to run this project")
+
+    # `payload` is accepted (e.g. for a future specific-test selector) but
+    # not used yet — we can't script the IDE to run a particular test, so
+    # there's nothing to do with it until that becomes possible.
+    _ = payload
 
     if not os.path.isdir(config.working_directory):
         raise HTTPException(status_code=400, detail=f"Working directory not found: {config.working_directory}")
@@ -654,7 +759,7 @@ def trigger_project_run(
     session = models.Session(
         user_id=user.id,
         token=token,
-        expires_at=datetime.utcnow() + timedelta(hours=6),
+        expires_at=_utcnow() + timedelta(hours=6),
     )
     db.add(session)
     db.commit()
