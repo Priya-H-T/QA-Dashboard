@@ -384,13 +384,14 @@ function TestRuns({ project, onBack }) {
   const [selectedRun, setSelectedRun] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [detailKey, setDetailKey] = useState(0)
 
   const loadRuns = useCallback(async () => {
-    setLoading(true)
     setError('')
     try {
       const data = await listRuns(project)
       setRuns(data)
+      setDetailKey((k) => k + 1)
       setSelectedId((current) => {
         if (current && data.some((r) => r.id === current)) return current
         return data.length ? data[0].id : null
@@ -412,7 +413,15 @@ function TestRuns({ project, onBack }) {
       return
     }
     getRun(selectedId).then(setSelectedRun).catch((err) => setError(err.message))
-  }, [selectedId])
+  }, [selectedId, detailKey])
+
+  // While the selected run is still in progress, keep refreshing so it
+  // fills in and flips to "finished" on its own.
+  useEffect(() => {
+    if (selectedRun?.status !== 'in_progress') return
+    const t = setInterval(loadRuns, 5000)
+    return () => clearInterval(t)
+  }, [selectedRun?.status, loadRuns])
 
   const versionById = computeVersions(runs)
 

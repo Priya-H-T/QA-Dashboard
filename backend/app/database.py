@@ -13,6 +13,7 @@ DB_PATH = PROJECT_ROOT / "qa_dashboard.db"
 
 DATABASE_URL = os.environ.get("QA_DASHBOARD_DB_URL", f"sqlite:///{DB_PATH.as_posix()}")
 
+
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
